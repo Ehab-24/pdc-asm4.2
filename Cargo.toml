@@ -1,0 +1,43 @@
+[package]
+name = "asm4_2"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "asm4_2"
+path = "src/lib.rs"
+
+[[bin]]
+name = "master"
+path = "src/master.rs"
+
+[[bin]]
+name = "mapper"
+path = "src/mapper.rs"
+
+[[bin]]
+name = "reducer"
+path = "src/reducer.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
+[[bin]]
+name = "worker"
+path = "src/worker.rs"
+
+[dependencies]
+async-stream = "0.3.5"
+futures = "0.3.30"
+prost = "0.12.4"
+rhai = "1.18.0"
+serde = { version = "1.0.199", features = ["derive"] }
+serde_yaml = "0.9.34"
+tokio = { version = "1.37.0", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-stream = "0.1.15"
+tonic = "0.11.0"
+uuid = { version = "1.8.0", features = ["v4"] }
+
+[build-dependencies]
+tonic-build = "0.11.0"

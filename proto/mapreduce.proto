@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package mapreduce;
+
+// ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ Client ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
+
+message JobConfig {
+  repeated string inputFiles = 1;
+  string outputDirectory = 2;
+  uint32 numReducers = 5;
+  string mapFunc = 3;
+  string reduceFunc = 4;
+}
+
+message JobStatusResponse {
+  string jobId = 1;
+  JobStatus status = 2;
+  string detail = 8;
+  Error error = 3;
+  optional uint32 nJobsRunning = 4;
+  optional uint32 nJobsCompleted = 5;
+  optional uint32 nJobsFailed = 6;
+  optional uint32 percentageComplete = 7; // Hurestic or something
+}
+
+message Error {
+  string message = 1;
+}
+
+enum JobStatus {
+  PENDING = 0;
+  STARTED = 1;
+  SPLITTING = 2;
+  MAPPING = 3;
+  SHUFFLING = 4;
+  REDUCING = 5;
+  EXITING = 6;  // In case of successful exit
+  TERMINATING = 7;  // In case of failure
+}
+
+message SubmitJobRequest {
+  JobConfig jobConfig = 1;
+}
+
+service Client {
+  rpc SubmitJob(SubmitJobRequest) returns (stream JobStatusResponse);
+}
+
+// ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ Master ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
+
+message MapJobRequest {
+  string jobId = 1;
+  string inputFilepath = 2;
+  string outputDirectory = 3;
+  string mapFunc = 4;
+}
+
+message ReduceJobRequest {
+  string jobId = 1;
+  string inputFiilepath = 2;
+  string outputFilepath = 3;
+  string reduceFunc = 4;
+}
+
+message ShuffleJobRequest {
+  string jobId = 1;
+  KeyFilepaths keyFilepaths = 2;
+  string outputFilepath = 3;
+}
+
+message KeyFilepaths {
+  string key = 1;
+  repeated string filepaths = 2;
+}
+
+// ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ Mapper ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
+
+message MapJobStatusResponse {
+  string jobId = 1;
+  JobStatus status = 2;
+  optional uint32 nRecordsProcessed = 3;
+  optional uint32 nRecordsFailed = 4;
+  optional uint32 percentageComplete = 5; // Hurestic or something
+}
+
+// ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ Reducer ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
+
+message ReduceJobStatusResponse {
+  string jobId = 1;
+  JobStatus status = 2;
+  optional uint32 nRecordsProcessed = 3;
+  optional uint32 nRecordsFailed = 4;
+  optional uint32 percentageComplete = 5; // Hurestic or something
+}
+
+// ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ Shuffler ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
+
+message ShuffleJobStatusResponse {
+  string jobId = 1;
+  JobStatus status = 2;
+  optional uint32 nFilesProcessed = 3;
+  optional uint32 nFilesFailed = 4;
+  optional uint32 percentageComplete = 5; // Hurestic or something
+}
+
+// ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ Worker ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~
+
+service Worker {
+  rpc StartMapJob(MapJobRequest) returns (stream MapJobStatusResponse); // stream also works as heartbeat messages
+  rpc StartReduceJob(ReduceJobRequest) returns (stream ReduceJobStatusResponse);  // stream also works as heartbeat messages
+  rpc StartShuffleJob(ShuffleJobRequest) returns (stream ShuffleJobStatusResponse); // stream also works as heartbeat messages
+}
