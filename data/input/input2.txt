@@ -1,0 +1,8 @@
+Carrot,1
+Broccoli,1
+Lettuce,1
+Apple,2
+Spinach,1
+Carrot,1
+Banana,1
+Spinach,1

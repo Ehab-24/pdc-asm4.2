@@ -1,13 +1,8 @@
-#![allow(dead_code)]
-#![allow(unused_variables)]
-
 use std::{
-    sync::{Arc, RwLock},
-    time::Duration,
+    io::{BufRead, BufReader, Write}, sync::{Arc, RwLock}, time::Duration
 };
 
-use rhai::{Engine, ParseError, Scope};
-use tokio::sync::mpsc::channel;
+use rhai::{Engine, Scope};
 
 pub mod map_reduce {
     tonic::include_proto!("mapreduce");
@@ -100,7 +95,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     // tokio::time::sleep(Duration::from_secs(1)).await;
 
-    run_script();
+    // run_script();
+
+    // let mut file = std::fs::OpenOptions::new().create(true).write(true).append(true).open("data/out/map/some.txt").unwrap();
+    // file.write("some".as_bytes()).unwrap();
+
+
+    let reduce_func = String::from(r#"
+        fn reduce(k, vals) { 
+            for v in vals {
+                let n: i32 = v.parse().unwrap();
+                total = total + n;
+            };
+            emit(k, total);
+        }
+        "#);
+
+
+    let mut engine = Engine::new();
+    let ast = engine.compile(reduce_func).unwrap();
+    engine.register_fn("emit", |key: String, value: String, out_file: String| {
+        fn open_file(key: String, out_file: String) -> std::fs::File {
+            let path = format!("{}.kv", out_file);
+            std::fs::OpenOptions::new().create(true).write(true).append(true).open(path).unwrap()
+        }
+        let mut file = open_file(key.clone(), out_file.clone());
+        let out = format!("{},{}\n", key.clone(), value.clone());
+        file.write(out.as_bytes()).unwrap();
+    });
+
 
     Ok(())
 }

@@ -1,0 +1,6 @@
+Chair,1
+Table,1
+Desk,1
+Couch,1
+Chair,1
+Couch,1

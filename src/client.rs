@@ -18,14 +18,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let master_endpoint = format!("http://[::1]:{}", listen_port);
     let mut client = ClientClient::connect(master_endpoint).await?;
 
-    let mut input_files = vec![];
-    for i in 0..10 {
-        input_files.push(format!("file{}.txt", i));
-    }
-    let output_directory = "output".to_string();
+    let input_files = vec![
+        String::from("data/input/input1.txt"),
+        String::from("data/input/input2.txt"),
+        String::from("data/input/input3.txt"),
+        String::from("data/input/input4.txt"),
+        String::from("data/input/input5.txt"),
+    ];
+    let output_directory = "data/results".to_string();
     let num_reducers = 2;
-    let map_func = "map_func".to_string();
-    let reduce_func = "reduce_func".to_string();
+    let map_func = String::new();
+    let reduce_func = String::new();
 
     let config = JobConfig {
         input_files,
@@ -42,6 +45,5 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     while let Some(message) = stream.message().await? {
         println!("Job Status Response: {:?}", message)
     }
-
     Ok(())
 }

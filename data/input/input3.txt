@@ -1,0 +1,6 @@
+Dog,1
+Cat,1
+Bird,1
+Fish,1
+Dog,1
+Cat,1

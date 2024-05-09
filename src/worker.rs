@@ -3,10 +3,14 @@
 
 extern crate asm4_2;
 use asm4_2::map_reduce;
-
-use std::env;
+use rhai::{Engine, Scope};
 use std::io::{BufRead, BufReader};
+
+use std::collections::HashSet;
+use std::env;
+use std::io::Write;
 use std::net::SocketAddr;
+use std::ptr::addr_of;
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -22,8 +26,11 @@ use map_reduce::JobStatus;
 use map_reduce::{MapJobRequest, ReduceJobRequest, ShuffleJobRequest};
 use map_reduce::{MapJobStatusResponse, ReduceJobStatusResponse, ShuffleJobStatusResponse};
 
+static mut KEYS: Vec<String> = vec![];
+
 #[derive(Debug, Default)]
-struct WorkerService {}
+struct WorkerService {
+}
 
 #[derive(Debug, Clone)]
 struct Record {
@@ -34,8 +41,8 @@ struct Record {
 impl Record {
     fn new(str: String) -> Record {
         Record {
-            key: str.split('\t').next().unwrap().to_string(),
-            value: str.split('\t').nth(1).unwrap().to_string(),
+            key: str.split(',').nth(0).unwrap().to_string(),
+            value: str.split(',').nth(1).unwrap().to_string(),
         }
     }
 }
@@ -49,47 +56,81 @@ impl Worker for WorkerService {
         request: Request<MapJobRequest>,
     ) -> Result<Response<Self::StartMapJobStream>, Status> {
         let payload = request.into_inner();
-        let (tx, rx) = tokio::sync::mpsc::channel(4);
-        // let responses = vec![
-        //     MapJobStatusResponse {
-        //         job_id: payload.job_id.clone(),
-        //         status: JobStatus::Mapping.into(),
-        //         ..Default::default()
-        //     },
-        //     MapJobStatusResponse {
-        //         job_id: payload.job_id.clone(),
-        //         status: JobStatus::Mapping.into(),
-        //         ..Default::default()
-        //     },
-        //     MapJobStatusResponse {
-        //         job_id: payload.job_id.clone(),
-        //         status: JobStatus::Mapping.into(),
-        //         ..Default::default()
-        //     },
-        //     MapJobStatusResponse {
-        //         job_id: payload.job_id.clone(),
-        //         status: JobStatus::Mapping.into(),
-        //         ..Default::default()
-        //     },
-        // ];
-        //
-        // for resp in responses {
-        //     if let Err(e) = tx.send(Ok(resp)).await {
-        //         eprintln!("Error: {:?}", e);
-        //     } else {
-        //         println!("Sent response");
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+
+        let mut engine = Engine::new();
+        let script = payload.map_func;
+
+        // // register the emit function
+        // let ast = engine.compile(script).unwrap();
+        // engine.register_fn("emit", |key: String, value: String, dir_path: String| {
+        //     unsafe {
+        //         if !KEYS.contains(&key) {
+        //             KEYS.push(key.clone());
+        //         }
         //     }
-        //     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        //     fn open_file(key: String, dir_path: String) -> std::fs::File {
+        //         let path = format!("{}/{}.kv", dir_path, key);
+        //         std::fs::OpenOptions::new().create(true).write(true).append(true).open(path).unwrap()
+        //     }
+        //     let mut file = open_file(key.clone(), dir_path.clone());
+        //     let out = format!("{},{}\n", key.clone(), value.clone());
+        //     file.write(out.as_bytes()).unwrap();
+        // });
+        //
+        // // assign symbols to scope
+        // let mut scope = Scope::new();
+        // scope.push("dir_path", "data/intermediate/");
+        // unsafe {scope.push("keys", addr_of!(KEYS))};
+        //
+        // let file = std::fs::File::open(payload.input_filepath)?;
+        // let reader = BufReader::new(file);
+        // for (index, line) in reader.lines().enumerate() {
+        //     let line = line?;
+        //     let record = Record::new(line);
+        //     let _: () = engine.call_fn(&mut scope, &ast, "map", (record.key, record.value)).unwrap();
         // }
+
+        let mut keys: Vec<String> = vec![];
+        let dir_path = "data/intermediate";
+
+        // Emitter for map
+        let mut emit = |key: String, value: String| {
+            fn open_file(keys: &mut Vec<String>, key: String, dir_path: &str) -> std::fs::File {
+                if !keys.contains(&key) {
+                    keys.push(key.clone());
+                }
+                let path = format!("{}/{}.kv", dir_path, key.clone());
+                std::fs::OpenOptions::new().create(true).write(true).append(true).open(path).unwrap()
+            }
+            let mut file = open_file(&mut keys, key.clone(), dir_path);
+            let out = format!("{},{}\n", key.clone(), value.clone());
+            file.write(out.as_bytes()).unwrap();
+        };
+
+        // Define map function
+        let mut map = |key: String, value: String| {
+            emit(key, value);
+        };
 
         let file = std::fs::File::open(payload.input_filepath)?;
         let reader = BufReader::new(file);
+        let mut n_records_processed = 0;
         for (index, line) in reader.lines().enumerate() {
-            let line = line?;
+            let line = line.unwrap();
             let record = Record::new(line);
-            // payload.
+            map(record.key, record.value);
+            n_records_processed += 1;
         }
 
+        // Send response back
+        let mut resp = MapJobStatusResponse::default();
+        resp.keys = keys;
+        resp.n_records_processed = Some(n_records_processed);
+ 
+        tokio::spawn(async move {
+            tx.send(Ok(resp)).await.unwrap();
+        });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
 
@@ -99,39 +140,74 @@ impl Worker for WorkerService {
         &self,
         request: Request<ReduceJobRequest>,
     ) -> Result<Response<Self::StartReduceJobStream>, Status> {
-        println!("{:?}", request.into_inner());
-        todo!()
+        let (tx, rx) = tokio::sync::mpsc::channel(1);
+        let payload = request.into_inner();
+
+        fn emit (key: String, value: String, out_file: String) {
+            fn open_file(out_file: String) -> std::fs::File {
+                let path = format!("{}.kv", out_file);
+                std::fs::OpenOptions::new().create(true).write(true).append(true).open(path).unwrap()
+            }
+            let mut file = open_file(out_file);
+            let out = format!("{},{}\n", key, value);
+            file.write(out.as_bytes()).unwrap();
+        }
+
+        fn reduce(key: String, values: Vec<String>, out_file: String) {
+            let mut total = 0;
+            for v in values {
+                let n = v.parse::<i32>().unwrap();
+                total += n;
+            }
+            emit(key, total.to_string(), out_file);
+        }
+
+        let file = std::fs::File::open(payload.input_fiilepath.clone()).unwrap();
+        let reader = BufReader::new(file);
+        let mut values: Vec<String> = vec![];
+        let mut key = String::new();
+        let mut n_records_processed = 0;
+        for (index, line) in reader.lines().enumerate() {
+            let line = line.unwrap();
+            let record = Record::new(line);
+            if key == String::new() {
+                key = record.key;
+            } else if key != record.key {
+                let status = tonic::Status::new(tonic::Code::InvalidArgument, format!("Invalid key in file. Line: {}", index));
+                return Err(status);
+            }
+            values.push(record.value);
+            n_records_processed += 1;
+        }
+        reduce(key, values, payload.output_filepath.clone());
+        
+        // Send response back
+        let mut resp = ReduceJobStatusResponse::default();
+        resp.status = JobStatus::Exiting.into();
+        resp.n_records_processed = Some(n_records_processed);
+ 
+        tokio::spawn(async move {
+            tx.send(Ok(resp)).await.unwrap();
+        });
+        Ok(Response::new(ReceiverStream::new(rx)))
     }
 
+
+    // DEPRECATED:
+    // Shuffle is not needed
+   
     type StartShuffleJobStream = ReceiverStream<Result<ShuffleJobStatusResponse, Status>>;
 
     async fn start_shuffle_job(
         &self,
         request: tonic::Request<ShuffleJobRequest>,
     ) -> Result<Response<Self::StartShuffleJobStream>, Status> {
-        println!("Shuffle started");
+        unimplemented!("DEPRECATED: Shuffle is not needed")
+    }
+}
 
-        let payload = request.into_inner();
-        let key_filepaths = payload.key_filepaths.unwrap();
-        let mut output = std::fs::File::open(key_filepaths.key)?;
-        let mut bytes_written = 0;
-        let n_files = key_filepaths.filepaths.len();
-        for path in key_filepaths.filepaths {
-            let mut file = std::fs::File::open(path)?;
-            bytes_written += std::io::copy(&mut file, &mut output)?;
-        }
-
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        tx.send(Ok(ShuffleJobStatusResponse {
-            job_id: payload.job_id,
-            status: JobStatus::Exiting as i32,
-            n_files_processed: Some(n_files as u32),
-            n_files_failed: Some(0),
-            percentage_complete: Some(100),
-        }))
-        .await
-        .unwrap();
-        Ok(Response::new(ReceiverStream::new(rx)))
+impl WorkerService {
+    async fn get_or_create_file(path: String, files: HashSet<String>) {
     }
 }
 
@@ -194,12 +270,28 @@ impl WorkerNode {
         job: MapJobRequest,
     ) -> Result<MapJobStatusResponse, Box<dyn std::error::Error + Send + Sync>> {
         if let Some(conn) = &mut self.conn {
-            let mut stream = conn.start_map_job(job).await?.into_inner();
+            let mut stream = conn.start_map_job(job).await.unwrap().into_inner();
             let mut result = MapJobStatusResponse::default();
             while let Some(resp) = stream.message().await? {
-                println!("assign_map_job: {:?}", resp);
                 result = resp;
             }
+            println!("{:?}", result);
+            return Ok(result);
+        }
+        Err("Connection is None".into())
+    }
+
+    pub async fn assign_reduce_job(
+        &mut self,
+        job: ReduceJobRequest
+    ) -> Result<ReduceJobStatusResponse, Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(conn) = &mut self.conn {
+            let mut stream = conn.start_reduce_job(job).await.unwrap().into_inner();
+            let mut result = ReduceJobStatusResponse::default();
+            while let Some(resp) = stream.message().await.unwrap() {
+                result = resp;
+            }
+            println!("ReduceJobStatusResponse: {:?}", result);
             return Ok(result);
         }
         Err("Connection is None".into())
@@ -279,7 +371,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     Server::builder()
         .add_service(WorkerServer::new(svc))
         .serve(addr)
-        .await?;
+    .await?;
 
     Ok(())
 }

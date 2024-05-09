@@ -64,7 +64,8 @@ message ReduceJobRequest {
 
 message ShuffleJobRequest {
   string jobId = 1;
-  KeyFilepaths keyFilepaths = 2;
+  string key = 2;
+  string inputDirectory = 4;
   string outputFilepath = 3;
 }
 
@@ -81,6 +82,7 @@ message MapJobStatusResponse {
   optional uint32 nRecordsProcessed = 3;
   optional uint32 nRecordsFailed = 4;
   optional uint32 percentageComplete = 5; // Hurestic or something
+  repeated string keys = 6;
 }
 
 // ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ Reducer ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~

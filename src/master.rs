@@ -8,8 +8,13 @@ mod shuffler;
 mod gate_keeper;
 mod worker;
 
+use asm4_2::map_reduce::KeyFilepaths;
+use asm4_2::map_reduce::ReduceJobRequest;
+use asm4_2::map_reduce::ShuffleJobRequest;
 use ::futures::future::join_all;
+
 use map_reduce::{JobConfig, MapJobRequest};
+use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -69,42 +74,75 @@ impl Master {
         ));
         // let worker_pool = WorkerPool::from_yaml(&"res/workers.yaml".to_string()).await?;
 
+        fn data_dir(path: &str) -> String {
+            format!("data/{}", path)
+        }
+
         ClientService::send_started_message(&tx, job_id.clone(), "").await;
 
-        let map_jobs = if let Some(config) = request.job_config {
-            create_map_jobs(&job_id, config)
+        let map_jobs = if let Some(config) = request.job_config.clone() {
+            create_map_jobs(job_id.clone(), config, data_dir("map"))
         } else {
             ClientService::send_failure_response(&tx, job_id.clone(), "No job config provided")
                 .await;
             return Ok(());
         };
 
+        let map_keys = Arc::new(RwLock::new(HashSet::new()));
         let futs: Vec<_> = map_jobs
             .into_iter()
+            .map(|job| {
+                let worker_pool = Arc::clone(&worker_pool);
+                let map_keys = Arc::clone(&map_keys);
+                async move {
+                    if let Some(w) = worker_pool.read().await.get_free_worker().await {
+                        let mut w = w.lock().await;
+                        let response = w.assign_map_job(job).await.unwrap();
+                        let some = response.keys.clone();
+                        for k in some {
+                            map_keys.write().await.insert(k);
+                        }
+                    }
+                }
+            })
+            .collect();
+
+        let _ = join_all(futs).await;
+        println!("Map Keys: {:?}", map_keys.read().await);
+
+        // ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ Reduce ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ ~ 
+        
+        let reduce_jobs = if let Some(config) = request.job_config.clone() {
+            let map_keys = map_keys.read().await;
+            let map_keys = map_keys.clone().into_iter().collect();
+            let intermediate_dir = data_dir("intermediate");
+            let out_dir = config.output_directory.clone();
+            create_reduce_jobs(job_id, config, map_keys, intermediate_dir, out_dir)
+        } else {
+            ClientService::send_failure_response(&tx, job_id.clone(), "Invalid job config")
+                .await;
+            return Ok(());
+        };
+
+        let futs: Vec<_> = reduce_jobs.into_iter()
             .map(|job| {
                 let worker_pool = Arc::clone(&worker_pool);
                 async move {
                     if let Some(w) = worker_pool.read().await.get_free_worker().await {
                         let mut w = w.lock().await;
-                        let response = w.assign_map_job(job).await.unwrap();
-                        println!("Job completed");
+                        let response = w.assign_reduce_job(job).await.unwrap();
                     }
                 }
             })
-            .collect();
-        let some = join_all(futs).await;
+                .collect();
 
-        // create shuffle jobs
-        let shuffle_jobs = 
-
-        // assign shuffle jobs to workers
+        let _ = join_all(futs).await;
 
         Ok(())
     }
 }
 
 impl ClientService {
-    #[allow(dead_code)]
     async fn send_pending_message(
         tx: &mpsc::Sender<Result<JobStatusResponse, Status>>,
         job_id: String,
@@ -145,18 +183,31 @@ impl ClientService {
     }
 }
 
-fn create_map_jobs(job_id: &String, config: JobConfig) -> Vec<MapJobRequest> {
+fn create_map_jobs(job_id: String, config: JobConfig, out_dir: String) -> Vec<MapJobRequest> {
     config
         .input_files
         .iter()
         .map(|file| {
             let map_job = MapJobRequest {
                 job_id: job_id.clone(),
-                output_directory: config.output_directory.clone(),
+                output_directory: out_dir.clone(),
                 input_filepath: file.to_string(),
+                map_func: config.map_func.clone(),
             };
             map_job
         })
+        .collect()
+}
+
+fn create_reduce_jobs(job_id: String, config: JobConfig, keys: Vec<String>, intermediate_dir: String, out_dir: String) -> Vec<ReduceJobRequest> {
+    keys.iter().map(|k| {
+        ReduceJobRequest {
+            input_fiilepath: format!("{}/{}.kv", intermediate_dir, k),
+            output_filepath: format!("{}/{}", out_dir, k),
+            job_id: job_id.clone(),
+            reduce_func: config.reduce_func.clone()
+        }
+    })
         .collect()
 }
 
